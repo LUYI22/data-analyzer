@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Data Analyzer</title>
+    <style>
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        padding: 2rem;
+        max-width: 600px;
+        margin: 0 auto;
+        color: #333;
+      }
+      .upload-container {
+        border: 2px dashed #ccc;
+        border-radius: 8px;
+        padding: 2rem;
+        text-align: center;
+        background-color: #f9f9f9;
+        margin-bottom: 2rem;
+      }
+      input[type="file"] {
+        margin-bottom: 1rem;
+      }
+      button {
+        padding: 10px 20px;
+        background-color: #007aff;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      .results-container {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 1rem;
+        background-color: #fff;
+        min-height: 150px;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        background-color: #f4f4f4;
+        padding: 1rem;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Data Analyzer</h1>
+
+    <div class="upload-container">
+      <!-- The accept attribute limits the file types the user can select -->
+      <input
+        type="file"
+        id="fileInput"
+        accept=".csv, .txt, .xlsx, .json, .xml, .sql"
+      />
+      <br />
+      <button onclick="analyzeData()">Analyze</button>
+    </div>
+
+    <h2>Analysis Results</h2>
+    <div class="results-container">
+      <pre id="output">Waiting for file upload...</pre>
+    </div>
+
+    <script>
+      async function analyzeData() {
+        const fileInput = document.getElementById("fileInput");
+        const outputDisplay = document.getElementById("output");
+
+        // 1. Check if a file was actually selected
+        if (fileInput.files.length === 0) {
+          alert("Please select a file first.");
+          return;
+        }
+
+        // 2. Package the file into a FormData object
+        const file = fileInput.files[0];
+        const formData = new FormData();
+        formData.append("file", file);
+
+        // Update UI to show loading state
+        outputDisplay.textContent = "Analyzing data... please wait.";
+
+        try {
+          // 3. Send the POST request to your local Python server
+          const response = await fetch("http://127.0.0.1:8000/analyze", {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!response.ok) {
+            throw new Error(`Server error: ${response.status}`);
+          }
+
+          // 4. Receive the JSON analysis from Python and display it
+          const resultData = await response.json();
+          outputDisplay.textContent = JSON.stringify(resultData, null, 4);
+        } catch (error) {
+          console.error("Error:", error);
+          outputDisplay.textContent =
+            "Failed to analyze data. Make sure your Python server is running.\n\nError details: " +
+            error.message;
+        }
+      }
+    </script>
+  </body>
+</html>
