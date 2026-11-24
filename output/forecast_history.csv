@@ -1,4 +1,4 @@
 run_date,run_mode,next_day_forecast_pct,ridge_alpha,test_days,rmse_model,rmse_baseline,directional_accuracy,binom_p_vs_coinflip,corr_pred_vs_actual,data_through_date,forecast_for_date,forecast_direction,actual_return_pct,actual_direction,direction_correct,prior_close,target_close
 2026-11-23,real,-0.500000,,,,,,,,2026-11-23,2026-11-24,fall,-0.513644,fall,True,722.290000,718.580000
-2026-11-24,real,-0.047043,10000.000000,37,0.015491,0.015301,0.486486,1.000000,-0.103498,2026-11-23,2026-11-24,fall,-0.513644,fall,True,722.290000,718.580000
-2026-11-24,synthetic,-0.126687,10000.000000,38,0.008019,0.008017,0.552632,0.627103,-0.199153,,,,,,,,
+2026-11-24,real,-0.047043,10000.000000,37.000000,0.015491,0.015301,0.486486,1.000000,-0.103498,2026-11-23,2026-11-24,fall,-0.513644,fall,True,722.290000,718.580000
+2026-11-24,synthetic,-0.126687,10000.000000,38.000000,0.008019,0.008017,0.552632,0.627103,-0.199153,,,,,,,,
