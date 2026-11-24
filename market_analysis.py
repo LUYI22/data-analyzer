@@ -45,10 +45,35 @@ ORANGE = "#d9822b"
 
 
 # ----------------------------------------------------------------------------- data
-def fetch_daily(symbol: str, key: str, cache_dir: Path) -> pd.Series:
-    """Latest 100 daily closes (raw, as traded). Cached per symbol per day."""
+def migrate_cache_layout(cache_dir: Path) -> None:
+    """Move legacy SYMBOL_YYYY-MM-DD.json files into date folders."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache = cache_dir / f"{symbol}_{dt.date.today().isoformat()}.json"
+    for legacy in cache_dir.glob("*_*.json"):
+        symbol, separator, collection_date = legacy.stem.rpartition("_")
+        if not separator or not symbol or not collection_date:
+            continue
+        try:
+            dt.date.fromisoformat(collection_date)
+        except ValueError:
+            continue
+        date_dir = cache_dir / collection_date
+        date_dir.mkdir(parents=True, exist_ok=True)
+        legacy.replace(date_dir / f"{symbol}.json")
+
+
+def fetch_daily(symbol: str, key: str, cache_dir: Path) -> pd.Series:
+    """Latest 100 daily closes (raw, as traded). Cached by collection date."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    collection_date = dt.date.today().isoformat()
+    date_dir = cache_dir / collection_date
+    date_dir.mkdir(parents=True, exist_ok=True)
+    cache = date_dir / f"{symbol}.json"
+
+    # Read legacy files while existing caches are migrated to date folders.
+    legacy_cache = cache_dir / f"{symbol}_{collection_date}.json"
+    if not cache.exists() and legacy_cache.exists():
+        legacy_cache.replace(cache)
+
     if cache.exists():
         data = json.loads(cache.read_text())
     else:
@@ -67,8 +92,10 @@ def fetch_daily(symbol: str, key: str, cache_dir: Path) -> pd.Series:
         if "Time Series (Daily)" not in data:
             msg = data.get("Error Message") or data.get("Note") or data.get("Information") or str(data)[:200]
             raise RuntimeError(f"{symbol}: {msg}")
-        cache.write_text(json.dumps(data))
+        data["Time Series (Daily)"] = dict(sorted(data["Time Series (Daily)"].items(), reverse=True))
+        cache.write_text(json.dumps(data, indent=2))
     ts = data["Time Series (Daily)"]
+    ts = dict(sorted(ts.items(), reverse=True))
     s = pd.Series({pd.Timestamp(d): float(v["4. close"]) for d, v in ts.items()}).sort_index()
     return s.rename(symbol)
 
@@ -155,6 +182,99 @@ def score(res: pd.DataFrame) -> dict:
         "binom_p_vs_coinflip": binomtest(hits, n, 0.5).pvalue,
         "corr_pred_vs_actual": float(res["predicted"].corr(res["actual"])),
     }
+
+
+def next_trading_day(date: dt.date) -> dt.date:
+    target = date + dt.timedelta(days=1)
+    while target.weekday() >= 5:
+        target += dt.timedelta(days=1)
+    return target
+
+
+def find_spy_actual(cache_dir: Path, target_date: dt.date) -> tuple[float | None, float | None, float | None]:
+    closes = {}
+    for cache in cache_dir.rglob("SPY.json"):
+        try:
+            data = json.loads(cache.read_text())
+            for date_text, values in data.get("Time Series (Daily)", {}).items():
+                closes[pd.Timestamp(date_text)] = float(values["4. close"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+    prior_date = target_date - dt.timedelta(days=1)
+    while prior_date.weekday() >= 5:
+        prior_date -= dt.timedelta(days=1)
+    target = pd.Timestamp(target_date)
+    prior = pd.Timestamp(prior_date)
+    if target not in closes or prior not in closes:
+        return None, None, None
+    actual_pct = (closes[target] / closes[prior] - 1) * 100
+    return closes[prior], closes[target], actual_pct
+
+
+def save_forecast_history(
+    out: Path,
+    prices: pd.DataFrame,
+    next_pred: float,
+    alpha: float,
+    sc: dict,
+    synthetic: bool,
+) -> None:
+    """Append or replace today's model forecast and update target-day results."""
+    path = out / "forecast_history.csv"
+    data_through = prices.index[-1].date()
+    target_date = next_trading_day(data_through)
+    prior_close, target_close, actual_pct = find_spy_actual(out / "cache", target_date)
+    forecast_pct = next_pred * 100
+    row = {
+        "run_date": dt.date.today().isoformat(),
+        "run_mode": "synthetic" if synthetic else "real",
+        "data_through_date": data_through.isoformat(),
+        "forecast_for_date": target_date.isoformat(),
+        "next_day_forecast_pct": forecast_pct,
+        "forecast_direction": "rise" if forecast_pct > 0 else "fall",
+        "actual_return_pct": actual_pct,
+        "actual_direction": "rise" if actual_pct is not None and actual_pct > 0
+                           else "fall" if actual_pct is not None else "pending",
+        "direction_correct": "pending" if actual_pct is None
+                             else actual_pct * forecast_pct > 0,
+        "prior_close": prior_close,
+        "target_close": target_close,
+        "ridge_alpha": alpha,
+        "test_days": sc["test_days"],
+        "rmse_model": sc["rmse_model"],
+        "rmse_baseline": sc["rmse_baseline"],
+        "directional_accuracy": sc["directional_accuracy"],
+        "binom_p_vs_coinflip": sc["binom_p_vs_coinflip"],
+        "corr_pred_vs_actual": sc["corr_pred_vs_actual"],
+    }
+    if path.exists():
+        history = pd.read_csv(path)
+        history = history[~((history["run_date"].astype(str) == row["run_date"]) &
+                            (history["run_mode"].astype(str) == row["run_mode"]))]
+        history = pd.concat([history, pd.DataFrame([row])], ignore_index=True)
+    else:
+        history = pd.DataFrame([row])
+
+    if "forecast_for_date" not in history.columns:
+        history["forecast_for_date"] = pd.NA
+    for i, recorded in history.iterrows():
+        target_text = recorded["forecast_for_date"]
+        if pd.isna(target_text):
+            continue
+        prior_close, target_close, actual_pct = find_spy_actual(
+            out / "cache", dt.date.fromisoformat(str(target_text))
+        )
+        if actual_pct is None:
+            continue
+        forecast_pct = float(recorded["next_day_forecast_pct"])
+        history.at[i, "actual_return_pct"] = actual_pct
+        history.at[i, "actual_direction"] = "rise" if actual_pct > 0 else "fall"
+        history.at[i, "direction_correct"] = actual_pct * forecast_pct > 0
+        history.at[i, "prior_close"] = prior_close
+        history.at[i, "target_close"] = target_close
+
+    history = history.sort_values(["run_date", "run_mode"])
+    history.to_csv(path, index=False, float_format="%.6f")
 
 
 # ----------------------------------------------------------------------------- charts
@@ -244,6 +364,7 @@ def main():
         if not key:
             sys.exit("Set ALPHAVANTAGE_API_KEY (free key: https://www.alphavantage.co/support/#api-key)")
         print("Fetching daily bars from Alpha Vantage...")
+        migrate_cache_layout(out / "cache")
         prices = load_prices(symbols, key, args.sleep, out / "cache")
 
     rets = np.log(prices).diff().dropna()
@@ -260,13 +381,16 @@ def main():
     res, next_pred, coefs, alpha = walk_forward(rets)
     res.to_csv(out / "predictions.csv")
     sc = score(res)
+    save_forecast_history(out, prices, next_pred, alpha, sc, args.synthetic)
     print(f"\nWalk-forward SPY next-day prediction (ridge alpha={alpha:.1f}, {sc['test_days']} out-of-sample days):")
     for k, v in sc.items():
         print(f"  {k:24s} {v:.4f}" if isinstance(v, float) else f"  {k:24s} {v}")
     verdict = "beats" if sc["rmse_model"] < sc["rmse_baseline"] else "does NOT beat"
     print(f"  -> model {verdict} the 'predict the average' baseline on RMSE.")
     print(f"\nLargest ridge coefficients (per 1.00 of daily log return):\n{coefs.head(5).round(4).to_string()}")
-    print(f"\nModel's forecast for SPY's next trading day: {next_pred * 100:+.3f}% "
+    forecast_date = next_trading_day(prices.index[-1].date())
+    print(f"\nData through {prices.index[-1].date()}, forecast for SPY on "
+          f"{forecast_date}: {next_pred * 100:+.3f}% "
           "(treat as a sanity-check output, not a trading signal)")
 
     chart_heatmap(corr, out / "correlation_heatmap.png")
