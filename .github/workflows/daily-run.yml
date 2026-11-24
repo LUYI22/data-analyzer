@@ -24,7 +24,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
       # Scheduled runs only. On a day the NYSE is closed (New Year's Day, MLK Day,
       # Presidents Day, Good Friday, Memorial Day, Juneteenth, Independence Day,
